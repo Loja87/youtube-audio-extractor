@@ -6,21 +6,32 @@ import os
 
 app = FastAPI()
 
+
+# --------------------------------------------------
+# Endpoint 1: EXTRAER METADATOS Y AUDIO_URL (debug)
+# --------------------------------------------------
 @app.get("/extract")
-def extract_audio(url: str = Query(...)):
+def extract_audio(url: str = Query(..., description="YouTube Shorts or video URL")):
     ydl_opts = {
         "format": "bestaudio/best",
         "noplaylist": True,
         "quiet": True,
         "skip_download": True,
     }
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             formats = info.get("formats", [])
-            audio = next((f for f in formats if f.get("acodec") != "none" and f.get("url")), None)
+
+            audio = next(
+                (f for f in formats if f.get("acodec") != "none" and f.get("url")),
+                None
+            )
+
             if not audio:
-                raise HTTPException(status_code=422, detail="No audio found")
+                raise HTTPException(status_code=422, detail="No audio stream found")
+
             return JSONResponse({
                 "title": info.get("title"),
                 "duration": info.get("duration"),
@@ -28,48 +39,56 @@ def extract_audio(url: str = Query(...)):
                 "ext": audio.get("ext", "m4a"),
                 "source": info.get("webpage_url")
             })
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# --------------------------------------------------
+# Endpoint 2: DESCARGAR AUDIO REAL (SIN FFMPEG)
+# --------------------------------------------------
 @app.get("/audio")
-def audio_file(url: str = Query(...)):
+def audio_file(url: str = Query(..., description="YouTube Shorts or video URL")):
     """
-    Descarga el audio en Railway (con yt-dlp) y lo devuelve como archivo.
-    Esto evita el 403 en Make.
+    Descarga el audio con yt-dlp SIN postprocesado (sin ffmpeg)
+    y lo devuelve como archivo binario para Make / Whisper.
     """
+
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             outtmpl = os.path.join(tmpdir, "audio.%(ext)s")
+
             ydl_opts = {
-                "format": "bestaudio/best",
+                # Forzamos formatos de audio directos
+                "format": "bestaudio[ext=m4a]/bestaudio/best",
                 "noplaylist": True,
                 "quiet": True,
                 "outtmpl": outtmpl,
+                "postprocessors": [],  # 👈 CLAVE: evita ffmpeg
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                # yt-dlp escribe el fichero; lo localizamos
-                requested = info.get("requested_downloads", [])
-                if requested and requested[0].get("filepath"):
-                    path = requested[0]["filepath"]
-                else:
-                    # fallback: buscar cualquier archivo en tmpdir
-                    files = [f for f in os.listdir(tmpdir) if f.startswith("audio.")]
-                    if not files:
-                        raise HTTPException(status_code=500, detail="Audio file not found after download")
-                    path = os.path.join(tmpdir, files[0])
+                ydl.download([url])
+
+            files = os.listdir(tmpdir)
+            if not files:
+                raise HTTPException(status_code=500, detail="No audio file downloaded")
+
+            path = os.path.join(tmpdir, files[0])
+
+            if os.path.getsize(path) == 0:
+                raise HTTPException(status_code=500, detail="Downloaded audio file is empty")
 
             def iterfile():
                 with open(path, "rb") as f:
                     yield from f
 
-            filename = os.path.basename(path)
             return StreamingResponse(
                 iterfile(),
                 media_type="application/octet-stream",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                headers={
+                    "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"'
+                }
             )
 
     except Exception as e:
