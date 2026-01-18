@@ -49,22 +49,20 @@ def extract_audio(url: str = Query(..., description="YouTube Shorts or video URL
 # --------------------------------------------------
 @app.get("/audio")
 def audio_file(url: str = Query(..., description="YouTube Shorts or video URL")):
-    """
-    Descarga el audio con yt-dlp SIN postprocesado (sin ffmpeg)
-    y lo devuelve como archivo binario para Make / Whisper.
-    """
-
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             outtmpl = os.path.join(tmpdir, "audio.%(ext)s")
 
             ydl_opts = {
-                # Forzamos formatos de audio directos
-                "format": "bestaudio[ext=m4a]/bestaudio/best",
+                "format": "bestaudio/best",
                 "noplaylist": True,
                 "quiet": True,
                 "outtmpl": outtmpl,
-                "postprocessors": [],  # 👈 CLAVE: evita ffmpeg
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }],
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -85,7 +83,7 @@ def audio_file(url: str = Query(..., description="YouTube Shorts or video URL"))
 
             return StreamingResponse(
                 iterfile(),
-                media_type="application/octet-stream",
+                media_type="audio/mpeg",
                 headers={
                     "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"'
                 }
